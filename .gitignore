@@ -115,3 +115,4 @@ venv.bak/
 
 # PyCharm
 .idea/
+src/poke_env/player/id.txt
