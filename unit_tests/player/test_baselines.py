@@ -7,6 +7,9 @@ from collections import namedtuple
 
 
 def test_max_base_power_player():
+    from poke_env.player import player as player_pkg
+    from poke_env.environment.battle import Battle
+
     player = MaxBasePowerPlayer(start_listening=False)
 
     PseudoBattle = namedtuple(
@@ -21,19 +24,25 @@ def test_max_base_power_player():
     )
     battle = PseudoBattle([], [], False, False, False)
 
-    assert player.choose_move(battle) == "/choose default"
+    player_pkg.Battle = PseudoBattle
+
+    assert player.choose_move(battle).message == "/choose default"
 
     battle.available_switches.append(Pokemon(species="ponyta"))
-    assert player.choose_move(battle) == "/choose switch ponyta"
+    assert player.choose_move(battle).message == "/choose switch ponyta"
 
     battle.available_moves.append(Move("protect"))
-    assert player.choose_move(battle) == "/choose move protect"
+    assert player.choose_move(battle).message == "/choose move protect"
 
     battle.available_moves.append(Move("quickattack"))
-    assert player.choose_move(battle) == "/choose move quickattack"
+    assert player.choose_move(battle).message == "/choose move quickattack"
 
     battle.available_moves.append(Move("flamethrower"))
-    assert player.choose_move(battle) == "/choose move flamethrower"
+    assert player.choose_move(battle).message == "/choose move flamethrower"
+
+    player_pkg.Battle = (
+        Battle  # this is in case a test runner shares memory between tests
+    )
 
 
 def test_simple_heuristics_player_estimate_matchup():
@@ -111,6 +120,9 @@ def test_simple_heuristics_player_should_switch_out():
     battle = PseudoBattle(
         Pokemon(species="charmander"), Pokemon(species="charmander"), []
     )
+    battle.active_pokemon._last_request["stats"] = {
+        stat: 0 for stat in battle.active_pokemon.base_stats
+    }
     assert player._should_switch_out(battle) is False
 
     battle.available_switches.append(Pokemon(species="venusaur"))
@@ -120,10 +132,10 @@ def test_simple_heuristics_player_should_switch_out():
     assert player._should_switch_out(battle) is False
 
     battle.active_pokemon._boost("spa", -3)
-    battle.active_pokemon.stats.update({"atk": 10, "spa": 20})
+    battle.active_pokemon._last_request["stats"].update({"atk": 10, "spa": 20})
     assert player._should_switch_out(battle) is True
 
-    battle.active_pokemon.stats.update({"atk": 30, "spa": 20})
+    battle.active_pokemon._last_request["stats"].update({"atk": 30, "spa": 20})
     assert player._should_switch_out(battle) is False
 
     battle.active_pokemon._boost("atk", -3)
@@ -176,22 +188,24 @@ def test_simple_heuristics_player():
         set(),
         set(),
     )
-    battle.active_pokemon._stats = {stat: 100 for stat in battle.active_pokemon._stats}
+    battle.active_pokemon._last_request["stats"] = {
+        stat: 100 for stat in battle.active_pokemon.base_stats
+    }
 
     battle.available_switches[0]._set_hp("100/100")
-    assert player.choose_move(battle) == "/choose switch togekiss"
+    assert player.choose_move(battle).message == "/choose switch togekiss"
 
     battle.available_moves.append(Move("quickattack"))
-    assert player.choose_move(battle) == "/choose move quickattack"
+    assert player.choose_move(battle).message == "/choose move quickattack"
 
     battle.available_moves.append(Move("flamethrower"))
-    assert player.choose_move(battle) == "/choose move flamethrower"
+    assert player.choose_move(battle).message == "/choose move flamethrower"
 
     battle.available_moves.append(Move("dracometeor"))
-    assert player.choose_move(battle) == "/choose move dracometeor"
+    assert player.choose_move(battle).message == "/choose move dracometeor"
 
     battle.active_pokemon._boost("atk", -3)
     battle.active_pokemon._boost("spa", -3)
     battle.available_switches.append(Pokemon(species="sneasel"))
     battle.available_switches[1]._set_hp("100/100")
-    assert player.choose_move(battle) == "/choose switch sneasel"
+    assert player.choose_move(battle).message == "/choose switch sneasel"

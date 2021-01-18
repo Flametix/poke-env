@@ -7,7 +7,8 @@ import numpy as np  # pyre-ignore
 
 from abc import ABC
 from abc import abstractmethod
-from poke_env.environment.battle import Battle
+from poke_env.environment.abstract_battle import AbstractBattle
+from poke_env.player.battle_order import BattleOrder
 from poke_env.player.player import Player
 from poke_env.player_configuration import PlayerConfiguration
 from poke_env.server_configuration import ServerConfiguration
@@ -20,8 +21,7 @@ from typing import Union
 
 
 class TrainablePlayer(Player, ABC):
-    """This is an experimental API.
-    """
+    """This is an experimental API."""
 
     def __init__(
         self,
@@ -33,6 +33,7 @@ class TrainablePlayer(Player, ABC):
         max_concurrent_battles: int = 1,
         model=None,
         server_configuration: ServerConfiguration,
+        start_timer_on_battle_start: bool = False,
         start_listening: bool = True,
         team: Optional[Union[str, Teambuilder]] = None,
     ) -> None:
@@ -50,9 +51,12 @@ class TrainablePlayer(Player, ABC):
         :type max_concurrent_battles: int
         :param server_configuration: Server configuration.
         :type server_configuration: ServerConfiguration
-        :param start_listening: Wheter to start listening to the server. Defaults to
+        :param start_listening: Whether to start listening to the server. Defaults to
             True.
         :type start_listening: bool
+        :param start_timer_on_battle_start: Whether to automatically start the battle
+            timer on battle start. Defaults to False.
+        :type start_timer_on_battle_start: bool
         :param team: The team to use for formats requiring a team. Can be a showdown
             team string, a showdown packed team string, of a ShowdownTeam object.
             Defaults to None.
@@ -66,6 +70,7 @@ class TrainablePlayer(Player, ABC):
             max_concurrent_battles=max_concurrent_battles,
             server_configuration=server_configuration,
             start_listening=start_listening,
+            start_timer_on_battle_start=start_timer_on_battle_start,
             team=team,
         )
         if not model:
@@ -75,7 +80,7 @@ class TrainablePlayer(Player, ABC):
 
         self._n_replays = 0
 
-    def _manage_error_in(self, battle: Battle):
+    def _manage_error_in(self, battle: AbstractBattle):
         self._training_data[battle].pop()
 
     @staticmethod
@@ -83,22 +88,22 @@ class TrainablePlayer(Player, ABC):
         pass
 
     @abstractmethod
-    def action_to_move(self, action, battle: Battle):
+    def action_to_move(self, action, battle: AbstractBattle):
         pass
 
     @abstractmethod
-    def battle_to_state(self, battle: Battle):
+    def battle_to_state(self, battle: AbstractBattle):
         pass
 
     @abstractmethod
-    def state_to_action(self, state: np.array, battle: Battle):  # pyre-ignore
+    def state_to_action(self, state: np.array, battle: AbstractBattle):  # pyre-ignore
         pass
 
     @abstractmethod
     def replay(self, battle_history: Dict):
         pass
 
-    def choose_move(self, battle: Battle) -> str:
+    def choose_move(self, battle: AbstractBattle) -> BattleOrder:
         state = self.battle_to_state(battle)
         action = self.state_to_action(state, battle)
         move = self.action_to_move(action, battle)
@@ -135,7 +140,7 @@ class TrainablePlayer(Player, ABC):
         self._n_replays += 1
 
     @property
-    def training_data(self) -> Dict[Battle, List]:
+    def training_data(self) -> Dict[AbstractBattle, List]:
         return self._training_data
 
     @property

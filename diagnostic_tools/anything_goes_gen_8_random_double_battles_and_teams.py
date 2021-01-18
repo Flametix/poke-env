@@ -1,10 +1,10 @@
 # -*- coding: utf-8 -*-
-"""This script can be used to run anything goes gen 8 battles with random teams.
+"""This script can be used to run anything goes gen 8 double battles with random teams.
 This is especially useful for debugging / testing purposes.
 
 usage:
-python diagnostic_tools/anything_goes_gen_8_battles_and_teams.py <n_battle> <log_level>\
-    <batch_size>
+python diagnostic_tools/anything_goes_gen_8_double_battles_and_teams.py <n_battle>
+<log_level> <batch_size>
 """
 import asyncio
 import orjson
@@ -94,7 +94,7 @@ async def main():
 
     p1 = RandomPlayer(
         player_configuration=player_1_configuration,
-        battle_format="gen8nationaldexag",
+        battle_format="gen8doublescustomgame",
         server_configuration=LocalhostServerConfiguration,
         team=RandomTeambuilder(),
         max_concurrent_battles=int(sys.argv[3]),
@@ -102,7 +102,7 @@ async def main():
     )
     p2 = RandomPlayer(
         player_configuration=player_2_configuration,
-        battle_format="gen8nationaldexag",
+        battle_format="gen8doublescustomgame",
         server_configuration=LocalhostServerConfiguration,
         team=RandomTeambuilder(),
         max_concurrent_battles=int(sys.argv[3]),

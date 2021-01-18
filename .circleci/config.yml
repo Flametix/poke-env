@@ -11,6 +11,7 @@ workflows:
     jobs:
       - test-3-6
       - test-3-7
+      - test-3-8
 jobs:
   test-3-6: &test-template
     docker:
@@ -28,51 +29,44 @@ jobs:
     steps:
       - checkout
 
+      - run:
+          name: Store python version into a file
+          command: |
+            python3 --version > python-version.txt
       # Download and cache dependencies
       - restore_cache:
           keys:
-            - requirements-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
-            # fallback to using the latest cache if no exact match is found
-            - requirements
+            - requirements-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}-{{ checksum "python-version.txt" }}-{{ .Branch }}
 
       - run:
           name: install dependencies
           command: |
             python3 -m venv venv
             . venv/bin/activate
+            pip install --upgrade pip
             pip install -r requirements.txt
-
       - run:
           name: install dev dependencies
           command: |
             python3 -m venv venv
             . venv/bin/activate
             pip install -r requirements-dev.txt
-
-      - save_cache:
-          paths:
-            - ./venv
-          key: requirements-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}
-
       - run:
           name: black
           command: |
             . venv/bin/activate
-            black src/ unit_tests/
+            black --check src/ unit_tests/ integration_tests/
 
       - run:
           name: flake8
           command: |
             . venv/bin/activate
-            flake8 src/ unit_tests/
-
+            flake8 src/ unit_tests/ integration_tests/
       - run:
           name: pyre
           command: |
             . venv/bin/activate
             pyre check
-
-
       # run tests!
       # this example uses Django's built-in test-runner
       # other common Python testing frameworks include pytest and nose
@@ -83,13 +77,11 @@ jobs:
           command: |
             . venv/bin/activate
             PYTHONPATH=src pytest -x --cov=src/poke_env unit_tests/
-
       - run:
           name: Converting coverage to xml
           command: |
             . venv/bin/activate
             coverage xml
-
       - codecov/upload:
           file: coverage.xml
 
@@ -98,34 +90,44 @@ jobs:
           command: |
             . venv/bin/activate
             python setup.py sdist bdist_wheel
-
       - run:
           name: Install built package
           command: |
             . venv/bin/activate
-            pip install dist/*.whl
-
+            pip install --force-reinstall dist/*.whl
       - run:
           name: Package-based tests
           command: |
             . venv/bin/activate
             pytest -x unit_tests/
-
       - run:
           name: Install node
           command: |
             curl -sSL "https://nodejs.org/dist/v12.13.0/node-v12.13.0-linux-x64.tar.xz" | sudo tar --strip-components=2 -xJ -C /usr/local/bin/ node-v12.13.0-linux-x64/bin/node
             curl https://www.npmjs.com/install.sh | sudo bash
-
       - run:
-          name: Download showdown
+          name: Download showdown or update it
           command: |
-            git clone https://github.com/hsahovic/Pokemon-Showdown.git
-
+            if [ -d "Pokemon-Showdown" ]
+            then
+                cd Pokemon-Showdown;git pull
+            else
+                git clone https://github.com/hsahovic/Pokemon-Showdown.git
+            fi
       - run:
           name: Install showdown dependencies
           command: |
             npm install Pokemon-Showdown
+      - run:
+          name: Uninstall poke-env before caching
+          command: |
+            pip uninstall poke-env --yes
+
+      - save_cache:
+          paths:
+            - ./venv
+            - ./Pokemon-Showdown
+          key: requirements-{{ checksum "requirements.txt" }}-{{ checksum "requirements-dev.txt" }}-{{ checksum "python-version.txt" }}-{{ .Branch }}
 
       - run:
           name: Start showdown server in the background
@@ -139,7 +141,6 @@ jobs:
             until $(curl --output /dev/null --silent --head --fail http://localhost:8000); do
               sleep .01
             done
-
       - run:
           name: Run integration tests
           command: |
@@ -149,5 +150,8 @@ jobs:
     <<: *test-template
     docker:
       - image: circleci/python:3.7
-
+  test-3-8:
+    <<: *test-template
+    docker:
+      - image: circleci/python:3.8
 

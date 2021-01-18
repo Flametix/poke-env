@@ -4,7 +4,13 @@ from poke_env.environment.move import Move
 from poke_env.environment.pokemon import Pokemon
 from poke_env.environment.status import Status
 from poke_env.player.env_player import EnvPlayer
-from poke_env.player.env_player import Gen7EnvSinglePlayer
+from poke_env.player.env_player import (
+    Gen4EnvSinglePlayer,
+    Gen5EnvSinglePlayer,
+    Gen6EnvSinglePlayer,
+    Gen7EnvSinglePlayer,
+    Gen8EnvSinglePlayer,
+)
 
 from poke_env.player_configuration import PlayerConfiguration
 from poke_env.server_configuration import ServerConfiguration
@@ -24,7 +30,7 @@ class CustomEnvPlayer(EnvPlayer):
 
     @property
     def action_space(self):
-        return Gen7EnvSinglePlayer.ACTION_SPACE
+        return Gen7EnvSinglePlayer._ACTION_SPACE
 
 
 def test_init():
@@ -48,23 +54,11 @@ def test_choose_move(queue_get_mock):
     battle = Battle("bat1", player.username, player.logger)
     battle._available_moves = {Move("flamethrower")}
 
-    assert player.choose_move(battle) == "/choose move flamethrower"
+    assert player.choose_move(battle).message == "/choose move flamethrower"
 
     battle._available_moves = {Pokemon(species="charizard")}
 
-    assert player.choose_move(battle) == "/choose switch charizard"
-
-
-def test_complete_current_battle():
-    pass
-
-
-def test_reset():
-    pass
-
-
-def test_step():
-    pass
+    assert player.choose_move(battle).message == "/choose switch charizard"
 
 
 def test_reward_computing_helper():
@@ -77,6 +71,7 @@ def test_reward_computing_helper():
     battle_1 = Battle("bat1", player.username, player.logger)
     battle_2 = Battle("bat2", player.username, player.logger)
     battle_3 = Battle("bat3", player.username, player.logger)
+    battle_4 = Battle("bat4", player.username, player.logger)
 
     assert (
         player.reward_computing_helper(
@@ -170,6 +165,49 @@ def test_reward_computing_helper():
         == 100
     )
 
+    battle_4._team, battle_4._opponent_team = battle_3._opponent_team, battle_3._team
+    assert (
+        player.reward_computing_helper(
+            battle_4,
+            fainted_value=2,
+            hp_value=3,
+            number_of_pokemons=4,
+            starting_value=0,
+            status_value=0.25,
+            victory_value=100,
+        )
+        == -2.25
+    )
 
-def test_play_against():
-    pass
+
+def test_action_space():
+    player = CustomEnvPlayer(start_listening=False)
+    for i, el in enumerate(player.action_space):
+        assert i == el
+    assert len(player.action_space) == 18
+
+    for PlayerClass, (has_megas, has_z_moves, has_dynamax) in zip(
+        [
+            Gen4EnvSinglePlayer,
+            Gen5EnvSinglePlayer,
+            Gen6EnvSinglePlayer,
+            Gen7EnvSinglePlayer,
+            Gen8EnvSinglePlayer,
+        ],
+        [
+            (False, False, False),
+            (False, False, False),
+            (True, False, False),
+            (True, True, False),
+            (True, True, True),
+        ],
+    ):
+
+        class CustomEnvClass(PlayerClass):
+            def embed_battle(self, *args, **kwargs):
+                return []
+
+        assert (
+            len(CustomEnvClass().action_space)
+            == 4 * sum([1, has_megas, has_z_moves, has_dynamax]) + 6
+        )

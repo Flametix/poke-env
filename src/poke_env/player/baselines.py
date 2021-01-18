@@ -2,6 +2,7 @@
 from poke_env.environment.move_category import MoveCategory
 from poke_env.environment.side_condition import SideCondition
 from poke_env.player.player import Player
+from poke_env.player.random_player import RandomPlayer  # noqa: F401
 
 
 class MaxBasePowerPlayer(Player):
@@ -114,7 +115,9 @@ class SimpleHeuristicsPlayer(Player):
             opponent, "spd"
         )
 
-        if battle.available_moves and (not self._should_switch_out(battle)):
+        if battle.available_moves and (
+            not self._should_switch_out(battle) or not battle.available_switches
+        ):
             n_remaining_mons = len(
                 [m for m in battle.team.values() if m.fainted is False]
             )
@@ -151,6 +154,10 @@ class SimpleHeuristicsPlayer(Player):
                         move.boosts
                         and sum(move.boosts.values()) >= 2
                         and move.target == "self"
+                        and min(
+                            [active.boosts[s] for s, v in move.boosts.items() if v > 0]
+                        )
+                        < 6
                     ):
                         return self.create_order(move)
 
@@ -164,15 +171,19 @@ class SimpleHeuristicsPlayer(Player):
                     else special_ratio
                 )
                 * m.accuracy
+                * m.expected_hits
                 * opponent.damage_multiplier(m),
             )
             return self.create_order(
                 move, dynamax=self._should_dynamax(battle, n_remaining_mons)
             )
 
-        return self.create_order(
-            max(
-                battle.available_switches,
-                key=lambda s: self._estimate_matchup(s, opponent),
+        if battle.available_switches:
+            return self.create_order(
+                max(
+                    battle.available_switches,
+                    key=lambda s: self._estimate_matchup(s, opponent),
+                )
             )
-        )
+
+        return self.choose_random_move(battle)

@@ -3,6 +3,7 @@
 """
 
 import asyncio
+import orjson
 import random
 
 from abc import ABC
@@ -11,19 +12,25 @@ from asyncio import Condition
 from asyncio import Event
 from asyncio import Queue
 from asyncio import Semaphore
-from json import JSONDecoder
 from time import perf_counter
 from typing import Dict
 from typing import List
 from typing import Optional
 from typing import Union
 
+from poke_env.environment.abstract_battle import AbstractBattle
 from poke_env.environment.battle import Battle
+from poke_env.environment.double_battle import DoubleBattle
 from poke_env.environment.move import Move
 from poke_env.environment.pokemon import Pokemon
 from poke_env.exceptions import ShowdownException
 from poke_env.exceptions import UnexpectedEffectException
 from poke_env.player.player_network_interface import PlayerNetwork
+from poke_env.player.battle_order import (
+    BattleOrder,
+    DefaultBattleOrder,
+    DoubleBattleOrder,
+)
 from poke_env.player_configuration import _create_player_configuration_from_player
 from poke_env.player_configuration import PlayerConfiguration
 from poke_env.server_configuration import LocalhostServerConfiguration
@@ -38,7 +45,11 @@ class Player(PlayerNetwork, ABC):
     Base class for players.
     """
 
-    MESSAGES_TO_IGNORE = [""]
+    MESSAGES_TO_IGNORE = {"", "t:", "expire"}
+
+    # When an error resulting from an invalid choice is made, the next order has this
+    # chance of being showdown's default order to prevent infinite loops
+    DEFAULT_CHOICE_CHANCE = 1 / 1000
 
     def __init__(
         self,
@@ -49,6 +60,7 @@ class Player(PlayerNetwork, ABC):
         log_level: Optional[int] = None,
         max_concurrent_battles: int = 1,
         server_configuration: Optional[ServerConfiguration] = None,
+        start_timer_on_battle_start: bool = False,
         start_listening: bool = True,
         team: Optional[Union[str, Teambuilder]] = None,
     ) -> None:
@@ -70,9 +82,12 @@ class Player(PlayerNetwork, ABC):
         :param server_configuration: Server configuration. Defaults to Localhost Server
             Configuration.
         :type server_configuration: ServerConfiguration, optional
-        :param start_listening: Wheter to start listening to the server. Defaults to
+        :param start_listening: Whether to start listening to the server. Defaults to
             True.
         :type start_listening: bool
+        :param start_timer_on_battle_start: Whether to automatically start the battle
+            timer on battle start. Defaults to False.
+        :type start_timer_on_battle_start: bool
         :param team: The team to use for formats requiring a team. Can be a showdown
             team string, a showdown packed team string, of a ShowdownTeam object.
             Defaults to None.
@@ -94,8 +109,9 @@ class Player(PlayerNetwork, ABC):
 
         self._format: str = battle_format
         self._max_concurrent_battles: int = max_concurrent_battles
+        self._start_timer_on_battle_start: bool = start_timer_on_battle_start
 
-        self._battles: Dict[str, Battle] = {}
+        self._battles: Dict[str, AbstractBattle] = {}
         self._battle_semaphore: Semaphore = Semaphore(0)
 
         self._battle_start_condition: Condition = Condition()
@@ -111,93 +127,97 @@ class Player(PlayerNetwork, ABC):
             self._team = None
 
         self.logger.debug("Player initialisation finished")
-        self._json_decoder = JSONDecoder()
 
-    def _battle_finished_callback(self, battle: Battle) -> None:
+    def _battle_finished_callback(self, battle: AbstractBattle) -> None:
         pass
 
-    async def _create_battle(self, split_message: List[str]) -> Battle:
+    async def _create_battle(self, split_message: List[str]) -> AbstractBattle:
         """Returns battle object corresponding to received message.
 
         :param split_message: The battle initialisation message.
         :type split_message: List[str]
         :return: The corresponding battle object.
-        :rtype: Battle
+        :rtype: AbstractBattle
         """
         # We check that the battle has the correct format
         if split_message[1] == self._format and len(split_message) >= 2:
             # Battle initialisation
-            battle_tag = "-".join(split_message[0:3])
-            if battle_tag.startswith(">"):
-                battle_tag = battle_tag[1:]
-            if battle_tag.endswith("\n"):
-                battle_tag = battle_tag[:-1]
+            battle_tag = "-".join(split_message)[1:]
 
-            if split_message[2] in self._battles:
-                return self._battles[split_message[2]]
+            if battle_tag in self._battles:
+                return self._battles[battle_tag]
             else:
-                battle = Battle(
-                    battle_tag=battle_tag, username=self.username, logger=self.logger
-                )
+                if self.format_is_doubles:
+                    battle = DoubleBattle(
+                        battle_tag=battle_tag,
+                        username=self.username,
+                        logger=self.logger,
+                    )
+                else:
+                    battle = Battle(
+                        battle_tag=battle_tag,
+                        username=self.username,
+                        logger=self.logger,
+                    )
                 await self._battle_count_queue.put(None)
-                if split_message[2] in self._battles:
+                if battle_tag in self._battles:
                     self._battle_count_queue.get()
-                    return self._battles[split_message[2]]
+                    return self._battles[battle_tag]
                 async with self._battle_start_condition:
                     self._battle_semaphore.release()
                     self._battle_start_condition.notify_all()
-                    self._battles[split_message[2]] = battle
+                    self._battles[battle_tag] = battle
+
+                if self._start_timer_on_battle_start:
+                    await self._send_message("/timer on", battle.battle_tag)
+
                 return battle
 
-            return self._battles[split_message[2]]
+            return self._battles[battle_tag]
         else:
             self.logger.critical(
                 "Unmanaged battle initialisation message received: %s", split_message
             )
             raise ShowdownException()
 
-    async def _get_battle(self, battle_number: str) -> Battle:
+    async def _get_battle(self, battle_tag: str) -> AbstractBattle:
+        battle_tag = battle_tag[1:]
         while True:
-            if battle_number in self._battles:
-                return self._battles[battle_number]
+            if battle_tag in self._battles:
+                return self._battles[battle_tag]
             async with self._battle_start_condition:
                 await self._battle_start_condition.wait()
 
-    async def _handle_battle_message(self, message: str) -> None:
+    async def _handle_battle_message(self, split_messages: List[List[str]]) -> None:
         """Handles a battle message.
 
         :param split_message: The received battle message.
         :type split_message: str
         """
         # Battle messages can be multiline
-        messages = [m.split("|") for m in message.split("\n")]
-        split_first_message = messages[0]
-        battle_info = split_first_message[0].split("-")
-
-        if len(messages) > 1 and len(messages[1]) > 1 and messages[1][1] == "init":
+        if (
+            len(split_messages) > 1
+            and len(split_messages[1]) > 1
+            and split_messages[1][1] == "init"
+        ):
+            battle_info = split_messages[0][0].split("-")
             battle = await self._create_battle(battle_info)
-            messages.pop(0)
+            split_messages.pop(0)
         else:
-            battle = await self._get_battle(battle_info[2])
+            battle = await self._get_battle(split_messages[0][0])
 
-        if battle is None:
-            self.logger.critical("No battle found from message %s", message)
-            return
-        for split_message in messages[1:]:
+        for split_message in split_messages[1:]:
             if len(split_message) <= 1:
-                self.logger.debug(
-                    "Battle message too short; ignored: '%s'", "".join(split_message)
-                )
+                continue
             elif split_message[1] in self.MESSAGES_TO_IGNORE:
                 pass
             elif split_message[1] == "request":
                 if split_message[2]:
-                    request = self._json_decoder.decode(split_message[2])
-                    if request:
-                        battle._parse_request(request)
-                        if battle.move_on_next_request:
-                            await self._handle_battle_request(battle)
-                            battle.move_on_next_request = False
+                    request = orjson.loads(split_message[2])
+                    battle._parse_request(request)
+                    if battle.move_on_next_request:
+                        await self._handle_battle_request(battle)
+                        battle.move_on_next_request = False
             elif split_message[1] == "title":
                 player_1, player_2 = split_message[2].split(" vs. ")
                 battle.players = player_1, player_2
@@ -212,26 +232,53 @@ class Player(PlayerNetwork, ABC):
                 async with self._battle_end_condition:
                     self._battle_end_condition.notify_all()
             elif split_message[1] == "error":
+                self.logger.warning(
+                    "Error message received: %s", "|".join(split_message)
+                )
                 if split_message[2].startswith(
                     "[Invalid choice] Sorry, too late to make a different move"
                 ):
                     if battle.trapped:
                         await self._handle_battle_request(battle)
-                elif (
-                    split_message[2].startswith(
-                        "[Unavailable choice] Can't switch: The active Pokémon is "
-                        "trapped"
-                    )
-                    or split_message[2].startswith(
-                        "[Invalid choice] Can't switch: The active Pokémon is trapped"
-                    )
-                    or split_message[2].startswith(
-                        "[Invalid choice] Can't switch: You can't switch to an active "
-                        "Pokémon"
-                    )
+                elif split_message[2].startswith(
+                    "[Unavailable choice] Can't switch: The active Pokémon is "
+                    "trapped"
+                ) or split_message[2].startswith(
+                    "[Invalid choice] Can't switch: The active Pokémon is trapped"
                 ):
                     battle.trapped = True
                     await self._handle_battle_request(battle)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Can't switch: You can't switch to an active "
+                    "Pokémon"
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Can't switch: You can't switch to a fainted "
+                    "Pokémon"
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Can't move: Invalid target for"
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Can't move: You can't choose a target for"
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Can't move: "
+                ) and split_message[2].endswith("needs a target"):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif (
+                    split_message[2].startswith("[Invalid choice] Can't move: Your")
+                    and " doesn't have a move matching " in split_message[2]
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
+                elif split_message[2].startswith(
+                    "[Invalid choice] Incomplete choice: "
+                ):
+                    await self._handle_battle_request(battle, maybe_default_order=True)
                 elif split_message[2].startswith("[Invalid choice]"):
                     self._manage_error_in(battle)
                 elif split_message[2].startswith(
@@ -241,8 +288,6 @@ class Player(PlayerNetwork, ABC):
                     battle.move_on_next_request = True
                 else:
                     self.logger.critical("Unexpected error message: %s", split_message)
-            elif split_message[1] == "expire":
-                pass
             elif split_message[1] == "turn":
                 battle.turn = int(split_message[2])
                 await self._handle_battle_request(battle)
@@ -255,17 +300,23 @@ class Player(PlayerNetwork, ABC):
                     self.logger.exception(e)
 
     async def _handle_battle_request(
-        self, battle: Battle, from_teampreview_request: bool = False
+        self,
+        battle: AbstractBattle,
+        from_teampreview_request: bool = False,
+        maybe_default_order=False,
     ):
-        if battle.teampreview:
+        if maybe_default_order and random.random() < self.DEFAULT_CHOICE_CHANCE:
+            message = self.choose_default_move(battle).message
+        elif battle.teampreview:
             if not from_teampreview_request:
                 return
             message = self.teampreview(battle)
         else:
-            message = self.choose_move(battle)
+            message = self.choose_move(battle).message
+
         await self._send_message(message, battle.battle_tag)
 
-    def _manage_error_in(self, battle: Battle):
+    def _manage_error_in(self, battle: AbstractBattle):
         pass
 
     async def _update_challenges(self, split_message: List[str]) -> None:
@@ -278,9 +329,7 @@ class Player(PlayerNetwork, ABC):
         :type split_message: List[str]
         """
         self.logger.debug("Updating challenges with %s", split_message)
-        challenges = self._json_decoder.decode(split_message[2]).get(
-            "challengesFrom", {}
-        )
+        challenges = orjson.loads(split_message[2]).get("challengesFrom", {})
         for user, format_ in challenges.items():
             if format_ == self._format:
                 await self._challenge_queue.put(user)
@@ -323,47 +372,144 @@ class Player(PlayerNetwork, ABC):
         await self._battle_count_queue.join()
 
     @abstractmethod
-    def choose_move(self, battle: Battle) -> str:
+    def choose_move(self, battle: AbstractBattle) -> BattleOrder:
         """Abstract method to choose a move in a battle.
 
         :param battle: The battle.
-        :type battle: Battle
+        :type battle: AbstractBattle
         :return: The move order.
         :rtype: str
         """
         pass
 
-    def choose_random_move(self, battle: Battle) -> str:
+    def choose_default_move(self, *args, **kwargs) -> DefaultBattleOrder:
+        """Returns showdown's default move order.
+
+        This order will result in the first legal order - according to showdown's
+        ordering - being chosen.
+        """
+        return DefaultBattleOrder()
+
+    def choose_random_doubles_move(self, battle: DoubleBattle) -> BattleOrder:
+        active_orders = [[], []]
+
+        for (
+            idx,
+            (orders, mon, switches, moves, can_mega, can_z_move, can_dynamax),
+        ) in enumerate(
+            zip(
+                active_orders,
+                battle.active_pokemon,
+                battle.available_switches,
+                battle.available_moves,
+                battle.can_mega_evolve,
+                battle.can_z_move,
+                battle.can_dynamax,
+            )
+        ):
+            if mon:
+                targets = {
+                    move: battle.get_possible_showdown_targets(move, mon)
+                    for move in moves
+                }
+                orders.extend(
+                    [
+                        BattleOrder(move, move_target=target)
+                        for move in moves
+                        for target in targets[move]
+                    ]
+                )
+                orders.extend([BattleOrder(switch) for switch in switches])
+
+                if can_mega:
+                    orders.extend(
+                        [
+                            BattleOrder(move, move_target=target, mega=True)
+                            for move in moves
+                            for target in targets[move]
+                        ]
+                    )
+                if can_z_move:
+                    available_z_moves = set(mon.available_z_moves)
+                    orders.extend(
+                        [
+                            BattleOrder(move, move_target=target, z_move=True)
+                            for move in moves
+                            for target in targets[move]
+                            if move in available_z_moves
+                        ]
+                    )
+
+                if can_dynamax:
+                    orders.extend(
+                        [
+                            BattleOrder(move, move_target=target, dynamax=True)
+                            for move in moves
+                            for target in targets[move]
+                        ]
+                    )
+
+                if sum(battle.force_switch) == 1:
+                    if orders:
+                        return orders[int(random.random() * len(orders))]
+                    return self.choose_default_move()
+
+        orders = DoubleBattleOrder.join_orders(*active_orders)
+
+        if orders:
+            return orders[int(random.random() * len(orders))]
+        else:
+            return DefaultBattleOrder()
+
+    def choose_random_singles_move(self, battle: Battle) -> BattleOrder:
+        available_orders = [BattleOrder(move) for move in battle.available_moves]
+        available_orders.extend(
+            [BattleOrder(switch) for switch in battle.available_switches]
+        )
+
+        if battle.can_mega_evolve:
+            available_orders.extend(
+                [BattleOrder(move, mega=True) for move in battle.available_moves]
+            )
+
+        if battle.can_dynamax:
+            available_orders.extend(
+                [BattleOrder(move, dynamax=True) for move in battle.available_moves]
+            )
+
+        if battle.can_z_move and battle.active_pokemon:
+            available_z_moves = set(
+                battle.active_pokemon.available_z_moves  # pyre-ignore
+            )
+            available_orders.extend(
+                [
+                    BattleOrder(move, z_move=True)
+                    for move in battle.available_moves
+                    if move in available_z_moves
+                ]
+            )
+
+        if available_orders:
+            return available_orders[int(random.random() * len(available_orders))]
+        else:
+            return self.choose_default_move(battle)
+
+    def choose_random_move(self, battle: AbstractBattle) -> BattleOrder:
         """Returns a random legal move from battle.
 
         :param battle: The battle in which to move.
-        :type battle: Battle
+        :type battle: AbstractBattle
         :return: Move order
         :rtype: str
         """
-        available_orders = []
-        available_z_moves = set()
-
-        if battle.can_z_move:
-            available_z_moves.update(battle.active_pokemon.available_z_moves)
-
-        for move in battle.available_moves:
-            available_orders.append(self.create_order(move))
-            if battle.can_mega_evolve:
-                available_orders.append(self.create_order(move, mega=True))
-            if battle.can_z_move and move in available_z_moves:
-                available_orders.append(self.create_order(move, z_move=True))
-            if battle.can_dynamax:
-                available_orders.append(self.create_order(move, dynamax=True))
-
-        for pokemon in battle.available_switches:
-            available_orders.append(self.create_order(pokemon))
-
-        if available_orders:
-            order = random.choice(available_orders)
+        if isinstance(battle, Battle):
+            return self.choose_random_singles_move(battle)
+        elif isinstance(battle, DoubleBattle):
+            return self.choose_random_doubles_move(battle)
         else:
-            order = "/choose default"
-        return order
+            raise ValueError(
+                "battle should be Battle or DoubleBattle. Received %d" % (type(battle))
+            )
 
     async def ladder(self, n_games):
         """Make the player play games on the ladder.
@@ -445,11 +591,11 @@ class Player(PlayerNetwork, ABC):
             perf_counter() - start_time,
         )
 
-    def random_teampreview(self, battle: Battle) -> str:
+    def random_teampreview(self, battle: AbstractBattle) -> str:
         """Returns a random valid teampreview order for the given battle.
 
         :param battle: The battle.
-        :type battle: Battle
+        :type battle: AbstractBattle
         :return: The random teampreview order.
         :rtype: str
         """
@@ -465,7 +611,7 @@ class Player(PlayerNetwork, ABC):
                 )
         self._battles = {}
 
-    def teampreview(self, battle: Battle) -> str:
+    def teampreview(self, battle: AbstractBattle) -> str:
         """Returns a teampreview order for the given battle.
 
         This order must be of the form /team TEAM, where TEAM is a string defining the
@@ -477,7 +623,7 @@ class Player(PlayerNetwork, ABC):
         Please refer to Pokemon Showdown's protocol documentation for more information.
 
         :param battle: The battle.
-        :type battle: Battle
+        :type battle: AbstractBattle
         :return: The teampreview order.
         :rtype: str
         """
@@ -489,7 +635,8 @@ class Player(PlayerNetwork, ABC):
         mega: bool = False,
         z_move: bool = False,
         dynamax: bool = False,
-    ) -> str:
+        move_target: int = DoubleBattle.EMPTY_TARGET_POSITION,
+    ) -> BattleOrder:
         """Formats an move order corresponding to the provided pokemon or move.
 
         :param order: Move to make or Pokemon to switch to.
@@ -500,28 +647,27 @@ class Player(PlayerNetwork, ABC):
         :type z_move: bool
         :param dynamax: Whether to dynamax, if a move is chosen.
         :type dynamax: bool
+        :param move_target: Target Pokemon slot of a given move
+        :type move_target: int
         :return: Formatted move order
         :rtype: str
         """
-        if isinstance(order, Move):
-            order = f"/choose move {order.id}"
-            if mega:
-                return order + " mega"
-            if z_move:
-                return order + " zmove"
-            if dynamax:
-                return order + " dynamax"
-            return order
-        else:
-            return f"/choose switch {order.species}"
+        return BattleOrder(
+            order, mega=mega, move_target=move_target, z_move=z_move, dynamax=dynamax
+        )
 
     @property
-    def battles(self) -> Dict[str, Battle]:
+    def battles(self) -> Dict[str, AbstractBattle]:
         return self._battles
 
     @property
     def format(self) -> str:
         return self._format
+
+    @property
+    def format_is_doubles(self) -> bool:
+        format_lowercase = self._format.lower()
+        return "vgc" in format_lowercase or "double" in format_lowercase
 
     @property
     def n_finished_battles(self) -> int:

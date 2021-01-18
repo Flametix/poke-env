@@ -90,7 +90,7 @@ class PlayerNetwork(ABC):
         if avatar_id is not None:
             await self._send_message(f"/avatar {avatar_id}")
 
-    def _create_player_logger(self, log_level: Optional[int]) -> Logger:  # pyre-ignore
+    def _create_player_logger(self, log_level: Optional[int]) -> Logger:
         """Creates a logger for the player.
 
         Returns a Logger displaying asctime and the player's username before messages.
@@ -121,50 +121,45 @@ class PlayerNetwork(ABC):
         :type message: str
         """
         try:
-            self.logger.debug("Received message to handle: %s", message)
-
             # Showdown websocket messages are pipe-separated sequences
-            split_message = message.split("|")
-            assert len(split_message) > 1
+            split_messages = [m.split("|") for m in message.split("\n")]
             # The type of message is determined by the first entry in the message
             # For battles, this is the zero-th entry
             # Otherwise it is the one-th entry
-            if split_message[1] == "challstr":
+            if split_messages[0][0].startswith(">battle"):
+                # Battle update
+                await self._handle_battle_message(split_messages)
+            elif split_messages[0][1] == "challstr":
                 # Confirms connection to the server: we can login
-                await self._log_in(split_message)
-            elif split_message[1] == "updateuser":
-                if split_message[2] == " " + self._username:
+                await self._log_in(split_messages[0])
+            elif split_messages[0][1] == "updateuser":
+                if split_messages[0][2] == " " + self._username:
                     # Confirms successful login
                     self.logged_in.set()
-                elif not split_message[2].startswith(" Guest "):
+                elif not split_messages[0][2].startswith(" Guest "):
                     self.logger.warning(
                         """Trying to login as %s, showdown returned %s """
                         """- this might prevent future actions from this agent. """
                         """Changing the agent's username might solve this problem.""",
                         self.username,
-                        split_message[2],
+                        split_messages[0][2],
                     )
-            elif "updatechallenges" in split_message[1]:
+            elif "updatechallenges" in split_messages[0][1]:
                 # Contain information about current challenge
-                await self._update_challenges(split_message)
-            elif split_message[0].startswith(">battle"):
-                # Battle update
-                await self._handle_battle_message(message)
-            elif split_message[1] == "updatesearch":
-                self.logger.debug("Ignored message: %s", message)
+                await self._update_challenges(split_messages[0])
+            elif split_messages[0][1] == "updatesearch":
                 pass
-            elif split_message[1] == "popup":
+            elif split_messages[0][1] == "popup":
                 self.logger.warning("Popup message received: %s", message)
-            elif split_message[1] in ["nametaken"]:
+            elif split_messages[0][1] in ["nametaken"]:
                 self.logger.critical("Error message received: %s", message)
                 raise ShowdownException("Error message received: %s", message)
-            elif split_message[1] == "pm":
-                self.logger.info("Received pm: %s", split_message)
+            elif split_messages[0][1] == "pm":
+                self.logger.warning("Received pm: %s", message)
             else:
-                self.logger.critical("Unhandled message: %s", message)
-                raise NotImplementedError("Unhandled message: %s" % message)
+                self.logger.warning("Unhandled message: %s", message)
         except CancelledError as e:
-            self.logger.critical("CancelledError intercepted. %s", e)
+            self.logger.critical("CancelledError intercepted: %s", e)
         except Exception as exception:
             self.logger.exception(
                 "Unhandled exception raised while handling message:\n%s", message
@@ -223,7 +218,7 @@ class PlayerNetwork(ABC):
         else:
             to_send = "|".join([room, message])
         await self._websocket.send(to_send)
-        self.logger.info(">>> %s", to_send)
+        self.logger.info("\033[93m\033[1m>>>\033[0m %s", to_send)
 
     async def _set_team(self):
         if self._team is not None:
@@ -249,7 +244,7 @@ class PlayerNetwork(ABC):
             ) as websocket:
                 self._websocket = websocket
                 async for message in websocket:
-                    self.logger.info("<<< %s", message)
+                    self.logger.info("\033[92m\033[1m<<<\033[0m %s", message)
                     coroutines.append(ensure_future(self._handle_message(message)))
         except websockets.exceptions.ConnectionClosedOK:
             self.logger.warning(
@@ -269,7 +264,7 @@ class PlayerNetwork(ABC):
         await self._websocket.close()
 
     @abstractmethod
-    async def _handle_battle_message(self, message: str) -> None:
+    async def _handle_battle_message(self, split_messages: List[List[str]]) -> None:
         """Abstract method.
 
         Implementation should redirect messages to corresponding battles.
@@ -292,7 +287,7 @@ class PlayerNetwork(ABC):
         return self._logged_in
 
     @property
-    def logger(self) -> Logger:  # pyre-ignore
+    def logger(self) -> Logger:
         """Logger associated with the player.
 
         :return: The logger.

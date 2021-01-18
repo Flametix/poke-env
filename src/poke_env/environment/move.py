@@ -15,7 +15,7 @@ from typing import Tuple
 from typing import Union
 
 
-special_moves: Dict
+SPECIAL_MOVES: Dict
 
 
 class Move:
@@ -41,7 +41,7 @@ class Move:
         "beforeMoveCallback",
     ]
 
-    __slots__ = "_id", "_current_pp", "_is_empty"
+    __slots__ = "_id", "_current_pp", "_is_empty", "_request_target"
 
     def __init__(self, move: str = "", move_id: Optional[str] = None):
         if move_id:
@@ -50,6 +50,8 @@ class Move:
             self._id: str = self.retrieve_id(move)
         self._current_pp = self.max_pp
         self._is_empty: bool = False
+
+        self._request_target = None
 
     def __repr__(self) -> str:
         return f"{self._id} (Move object)"
@@ -64,13 +66,25 @@ class Move:
         return "isZ" in MOVES[id_]
 
     @staticmethod
+    def is_max_move(id_) -> bool:
+        if id_.startswith("max"):
+            return True
+        if MOVES.get("isNonstandard", None) == "Gigantamax":
+            return True
+        return False
+
+    @staticmethod
     @lru_cache(4096)
     def should_be_stored(move_id: str) -> bool:
-        if move_id in special_moves:
+        if move_id in SPECIAL_MOVES:
             return False
         if move_id not in MOVES:
             return False
-        return not Move.is_id_z(move_id)
+        if Move.is_id_z(move_id):
+            return False
+        if Move.is_max_move(move_id):
+            return False
+        return True
 
     @property
     def accuracy(self) -> float:
@@ -113,7 +127,7 @@ class Move:
         :return: Wheter there exist a z-move version of this move.
         :rtype: bool
         """
-        return self.id not in special_moves
+        return self.id not in SPECIAL_MOVES
 
     @property
     def category(self) -> MoveCategory:
@@ -153,6 +167,21 @@ class Move:
         return self.entry.get("damage", 0)
 
     @property
+    def deduced_target(self) -> Optional[str]:
+        """
+        :return: Move deduced target, based on Move.target and showdown's request
+            messages.
+        :rtype: str, optional
+        """
+        if self.id in SPECIAL_MOVES:
+            return self.target
+        elif self.request_target:
+            return self.request_target
+        elif self.target == "randomNormal":
+            return self.request_target
+        return self.target
+
+    @property
     def defensive_category(self) -> MoveCategory:
         """
         :return: Move's defender category.
@@ -186,6 +215,26 @@ class Move:
             return MOVES[self._id[1:]]
         else:
             raise ValueError("Unknown move: %s" % self._id)
+
+    @property
+    def expected_hits(self) -> float:
+        """
+        :return: Expected number of hits, between 1 and 5. Equal to n_hits if n_hits is
+            constant.
+        :rtype: float
+        """
+
+        if self._id == "triplekick" or self._id == "tripleaxel":
+            # Triple Kick and Triple Axel have an accuracy check for each hit, and also
+            # rise in BP for each hit
+            return 1 + 2 * 0.9 + 3 * 0.81
+        min_hits, max_hits = self.n_hit
+        if min_hits == max_hits:
+            return min_hits
+        else:
+            # It hits 2-5 times
+            assert min_hits == 2 and max_hits == 5
+            return (2 + 3) / 3 + (4 + 5) / 6
 
     @property
     def flags(self) -> Set[str]:
@@ -349,6 +398,23 @@ class Move:
             return 0.25
         return 0.0
 
+    @property
+    def request_target(self) -> Optional[str]:
+        """
+        :return: Target information sent by showdown in a request message, if any.
+        :rtype: str, optional
+        """
+        return self._request_target
+
+    @request_target.setter
+    def request_target(self, request_target: Optional[str]) -> None:
+        """
+        :param request_target: Target information received from showdown in a request
+            message.
+        "type request_target: str, optional
+        """
+        self._request_target = request_target
+
     @staticmethod
     @lru_cache(maxsize=4096)
     def retrieve_id(move_name: str) -> str:
@@ -462,7 +528,24 @@ class Move:
     @property
     def target(self) -> str:
         """
-        :return: Move target.
+        :return: Move target. Possible targets (copied from PS codebase):
+            * adjacentAlly - Only relevant to Doubles or Triples, the move only
+                targets an ally of the user.
+            * adjacentAllyOrSelf - The move can target the user or its ally.
+            * adjacentFoe - The move can target a foe, but not (in Triples)
+                a distant foe.
+            * all - The move targets the field or all Pokémon at once.
+            * allAdjacent - The move is a spread move that also hits the user's ally.
+            * allAdjacentFoes - The move is a spread move.
+            * allies - The move affects all active Pokémon on the user's team.
+            * allySide - The move adds a side condition on the user's side.
+            * allyTeam - The move affects all unfainted Pokémon on the user's team.
+            * any - The move can hit any other active Pokémon, not just those adjacent.
+            * foeSide - The move adds a side condition on the foe's side.
+            * normal - The move can hit one adjacent Pokémon of your choice.
+            * randomNormal - The move targets an adjacent foe at random.
+            * scripted - The move targets the foe that damaged the user.
+            * self - The move affects the user of the move.
         :rtype: str
         """
         return self.entry["target"]
@@ -518,12 +601,14 @@ class Move:
         return None
 
     @property
-    def z_move_boost(self) -> Dict[str, int]:
+    def z_move_boost(self) -> Optional[Dict[str, int]]:
         """
         :return: Boosts associated with the z-move version of this move.
         :rtype: Dict[str, int]
         """
-        return self.entry.get("zMoveBoost", None)
+        if "zMove" in self.entry and "boost" in self.entry["zMove"]:
+            return self.entry["zMove"]["boost"]
+        return None
 
     @property
     def z_move_effect(self) -> Optional[str]:
@@ -531,7 +616,9 @@ class Move:
         :return: Effects associated with the z-move version of this move.
         :rtype: Optional[str]
         """
-        return self.entry.get("zMoveEffect", None)
+        if "zMove" in self.entry and "effect" in self.entry["zMove"]:
+            return self.entry["zMove"]["effect"]
+        return None
 
     @property
     def z_move_power(self) -> int:
@@ -539,8 +626,8 @@ class Move:
         :return: Base power of the z-move version of this move.
         :rtype: int
         """
-        if "zMovePower" in self.entry:
-            return self.entry["zMovePower"]
+        if "zMove" in self.entry and "basePower" in self.entry["zMove"]:
+            return self.entry["zMove"]["basePower"]
         elif self.category == MoveCategory.STATUS:
             return 0
         base_power = self.base_power
@@ -579,4 +666,4 @@ class EmptyMove(Move):
             return 0
 
 
-special_moves = {"struggle": Move("struggle"), "recharge": EmptyMove("recharge")}
+SPECIAL_MOVES = {"struggle": Move("struggle"), "recharge": EmptyMove("recharge")}
