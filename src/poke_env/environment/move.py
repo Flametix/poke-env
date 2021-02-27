@@ -17,6 +17,19 @@ from typing import Union
 
 SPECIAL_MOVES: Dict
 
+_PROTECT_MOVES = {
+    "protect",
+    "detect",
+    "endure",
+    "spikyshield",
+    "kingsshield",
+    "banefulbunker",
+    "obstruct",
+    "maxguard",
+}
+_SIDE_PROTECT_MOVES = {"wideguard", "quickguard", "matblock"}
+_PROTECT_COUNTER_MOVES = _PROTECT_MOVES | _SIDE_PROTECT_MOVES
+
 
 class Move:
     _MISC_FLAGS = [
@@ -324,6 +337,30 @@ class Move:
         :rtype: bool
         """
         return self._is_empty
+
+    @property
+    def is_protect_counter(self) -> bool:
+        """
+        :return: Wheter this move increments a mon's protect counter.
+        :rtype: int
+        """
+        return self._id in _PROTECT_COUNTER_MOVES
+
+    @property
+    def is_protect_move(self) -> bool:
+        """
+        :return: Wheter this move is a protect-like move.
+        :rtype: int
+        """
+        return self._id in _PROTECT_MOVES
+
+    @property
+    def is_side_protect_move(self) -> bool:
+        """
+        :return: Wheter this move is a side-protect move.
+        :rtype: int
+        """
+        return self._id in _SIDE_PROTECT_MOVES
 
     @property
     def is_z(self) -> bool:

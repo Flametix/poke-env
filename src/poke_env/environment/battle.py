@@ -179,6 +179,14 @@ class Battle(AbstractBattle):
                 return pokemon
 
     @property
+    def all_active_pokemons(self) -> List[Optional[Pokemon]]:
+        """
+        :return: A list containing all active pokemons and/or Nones.
+        :rtype: List[Optional[Pokemon]]
+        """
+        return [self.active_pokemon, self.opponent_active_pokemon]
+
+    @property
     def available_moves(self) -> List[Move]:
         """
         :return: The list of moves the player can use during the current move request.

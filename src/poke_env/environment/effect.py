@@ -6,6 +6,7 @@
 from poke_env.exceptions import UnexpectedEffectException
 
 from enum import Enum, unique, auto
+from typing import Set
 
 
 @unique
@@ -25,6 +26,7 @@ class Effect(Enum):
     BIDE = auto()
     BIND = auto()
     BURN_UP = auto()
+    CELEBRATE = auto()
     CHARGE = auto()
     CLAMP = auto()
     CONFUSION = auto()
@@ -53,6 +55,7 @@ class Effect(Enum):
     FORESIGHT = auto()
     FOREWARN = auto()
     FUTURE_SIGHT = auto()
+    G_MAX_CHI_STRIKE = auto()
     G_MAX_ONE_BLOW = auto()
     G_MAX_RAPID_FLOW = auto()
     GRAVITY = auto()
@@ -186,3 +189,60 @@ class Effect(Enum):
             return Effect[message.upper()]
         except KeyError:
             raise UnexpectedEffectException("Unexpected effect '%s' received" % message)
+
+    @property
+    def breaks_protect(self):
+        """
+        :return: Wheter this effects breaks protect-like states.
+        :rtype: bool
+        """
+        return self in _PROTECT_BREAKING_EFFECTS
+
+    @property
+    def is_turn_countable(self) -> bool:
+        """
+        :return: Wheter it is useful to keep track of the number of turns this effect
+            has been active for.
+        :rtype: bool
+        """
+        return self in _TURN_COUNTER_EFFECTS
+
+    @property
+    def is_action_countable(self) -> bool:
+        """
+        :return: Wheter it is useful to keep track of the number of times this effect
+            has been activated.
+        :rtype: bool
+        """
+        return self in _TURN_COUNTER_EFFECTS
+
+
+_PROTECT_BREAKING_EFFECTS: Set[Effect] = {
+    Effect.FEINT,
+    Effect.SHADOW_FORCE,
+    Effect.PHANTOM_FORCE,
+    Effect.HYPERSPACE_FURY,
+    Effect.HYPERSPACE_HOLE,
+}
+
+_TURN_COUNTER_EFFECTS: Set[Effect] = {
+    Effect.BIND,
+    Effect.CLAMP,
+    Effect.DISABLE,
+    Effect.DYNAMAX,
+    Effect.EMBARGO,
+    Effect.ENCORE,
+    Effect.FIRE_SPIN,
+    Effect.HEAL_BLOCK,
+    Effect.INFESTATION,
+    Effect.MAGMA_STORM,
+    Effect.MAGNET_RISE,
+    Effect.SAND_TOMB,
+    Effect.SKY_DROP,
+    Effect.SLOW_START,
+    Effect.TAUNT,
+    Effect.WHIRLPOOL,
+    Effect.WRAP,
+}
+
+_ACTION_COUNTER_EFFECTS: Set[Effect] = {Effect.CONFUSION, Effect.TORMENT}
