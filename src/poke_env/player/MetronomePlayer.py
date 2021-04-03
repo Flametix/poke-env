@@ -283,21 +283,21 @@ async def main():
         team=silvallyGhostTeam, player_configuration = silvallyGhostConfig
     )
     #Assign players
-    # players = [heracross_player, fveil_player]
-    # battleCount = 100
-    # # Now, let's evaluate our players
-    # await players[0].battle_against(players[1], n_battles=battleCount)
-    #
-    # if players[0].n_won_battles >= players[1].n_won_battles:
-    #     winner = players[0]
-    #     loser = players[1]
-    # else:
-    #     winner = players[1]
-    #     loser = players[0]
-    # print(
-    #     "%s won %d / %d battles against %s [this took %f seconds]"
-    #     % (winner.username, winner.n_won_battles, battleCount, loser.username, time.time() - start)
-    # )
+    players = [heracross_player, fveil_player]
+    battleCount = 5000
+    # Now, let's evaluate our players
+    await players[0].battle_against(players[1], n_battles=battleCount)
+
+    if players[0].n_won_battles >= players[1].n_won_battles:
+        winner = players[0]
+        loser = players[1]
+    else:
+        winner = players[1]
+        loser = players[0]
+    print(
+        "%s won %d / %d battles against %s [this took %f seconds]"
+        % (winner.username, winner.n_won_battles, battleCount, loser.username, time.time() - start)
+    )
 
     # # Now, we can cross evaluate them: every player will play 20 games against every
     # # other player.
