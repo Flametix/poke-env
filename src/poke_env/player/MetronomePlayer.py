@@ -16,9 +16,8 @@ class MetronomePlayer(Player):
     def __init__(self, **kwargs):
         super(MetronomePlayer, self).__init__(**kwargs, battle_format="gen8metronomebattle", max_concurrent_battles=1,
                                               start_timer_on_battle_start=True)
-
     def choose_move(self, battle):
-        return self.choose_random_doubles_move(battle)
+        return self.choose_default_move(self)
 
 #Teams
 mewTeam = """

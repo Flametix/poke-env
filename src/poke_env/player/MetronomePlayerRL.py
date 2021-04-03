@@ -21,7 +21,7 @@ class MetronomePlayerRL(Player):
     #     await self._send_message("dab dab dab")
     def choose_move(self, battle):
         # self.message()
-        return self.choose_random_doubles_move(battle)
+        return self.choose_default_move(battle)
 
 
 
